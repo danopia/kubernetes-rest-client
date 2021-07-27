@@ -1,5 +1,8 @@
-import { RestClient, HttpMethods, RequestOptions } from '../lib/contract.ts';
-import { JsonParsingTransformer, ReadLineTransformer } from "../lib/stream-transformers.ts";
+import { RestClient, HttpMethods, RequestOptions, ChannelStreams } from '../lib/contract.ts';
+import {
+  JsonParsingTransformer, ReadLineTransformer,
+  TaggedStreamTransformer,
+} from "../lib/stream-transformers.ts";
 import { KubeConfig, KubeConfigContext } from '../lib/kubeconfig.ts';
 
 const isVerbose = Deno.args.includes('--verbose');
@@ -117,6 +120,15 @@ export class KubeConfigRestClient implements RestClient {
     const authHeader = await this.ctx.getAuthHeader();
     if (authHeader) {
       headers['Authorization'] = authHeader;
+      if (opts.expectChannel) throw new Error(`Deno WebSockets cannot attach auth headers yet. See deno#9891`);
+    }
+
+    const fullUrl = new URL(path, this.ctx.cluster.server);
+
+    if (opts.expectChannel) {
+      fullUrl.protocol = fullUrl.protocol.replace(/^http/, 'ws');
+      const ws = new WebSocket(fullUrl.toString(), opts.expectChannel);
+      return await wrapWebSocket(ws, opts.abortSignal);
     }
 
     const accept = opts.accept ?? (opts.expectJson ? 'application/json' : undefined);
@@ -125,7 +137,7 @@ export class KubeConfigRestClient implements RestClient {
     const contentType = opts.contentType ?? (opts.bodyJson ? 'application/json' : undefined);
     if (contentType) headers['Content-Type'] = contentType;
 
-    const resp = await fetch(new URL(path, this.ctx.cluster.server), {
+    const resp = await fetch(fullUrl, {
       method: opts.method,
       body: opts.bodyStream ?? opts.bodyRaw ?? JSON.stringify(opts.bodyJson),
       redirect: 'error',
@@ -151,4 +163,53 @@ export class KubeConfigRestClient implements RestClient {
       return new Uint8Array(await resp.arrayBuffer());
     }
   }
+}
+
+async function wrapWebSocket(ws: WebSocket, signal?: AbortSignal) {
+  const resultP = new Promise<void>((ok, err) => {
+    ws.onerror = (evt) => err((evt as {error?: Error}).error
+      || new Error((evt as {message?: string}).message
+      || "WebSocket failed somehow!?"));
+    ws.onclose = () => ok();
+  });
+  const readyP = new Promise<void>(ok => {
+    ws.onopen = () => ok();
+  });
+
+  const pair: ChannelStreams = {
+    readable: new ReadableStream<Blob>({
+      start(ctlr) {
+        ws.onmessage = (evt) => ctlr.enqueue(evt.data);
+        resultP.then(() => {
+          console.log('k8s ws closed');
+          ctlr.close();
+        }, err => {
+          ctlr.error(err);
+        });
+      },
+    }).pipeThrough(new TaggedStreamTransformer()),
+    writable: new WritableStream<[number, Uint8Array]>({
+      write([idx, chunk], ctlr) {
+        const buf = new ArrayBuffer(chunk.byteLength + 1);
+        new Uint8Array(buf).set(chunk, 1);
+        new DataView(buf).setUint8(0, idx);
+        ws.send(buf);
+      }
+    }),
+  };
+
+  if (signal) {
+    const abortHandler = () => {
+      isVerbose && console.error('processing ws abort');
+      ws.close();
+    };
+    signal.addEventListener("abort", abortHandler);
+    resultP.finally(() => {
+      isVerbose && console.error('cleaning up ws abort handler');
+      signal?.removeEventListener("abort", abortHandler);
+    });
+  }
+
+  await Promise.race([readyP, resultP]);
+  return pair;
 }

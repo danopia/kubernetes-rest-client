@@ -21,11 +21,18 @@ export interface RequestOptions {
   bodyStream?: ReadableStream<Uint8Array>;
 
   accept?: string;
+  expectChannel?: string[];
   expectStream?: boolean;
   expectJson?: boolean;
 }
 
+export interface ChannelStreams {
+  readable: ReadableStream<[number, Uint8Array]>;
+  writable: WritableStream<[number, Uint8Array]>;
+}
+
 export interface RestClient {
+  performRequest(opts: RequestOptions & {expectChannel: string[]}): Promise<ChannelStreams>;
   performRequest(opts: RequestOptions & {expectStream: true; expectJson: true}): Promise<ReadableStream<JSONValue>>;
   performRequest(opts: RequestOptions & {expectStream: true}): Promise<ReadableStream<Uint8Array>>;
   performRequest(opts: RequestOptions & {expectJson: true}): Promise<JSONValue>;

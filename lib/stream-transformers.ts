@@ -128,3 +128,16 @@ export class WatchEventTransformer<T,U> extends TransformStream<JSONObject, Watc
     super({ transform: reader.processObject.bind(reader) });
   }
 }
+
+
+/** Parses the first byte off of Blobs for wsstream purposes */
+export class TaggedStreamTransformer extends TransformStream<Blob, [number,Uint8Array]> {
+  constructor(config?: QueuingStrategy<Blob>) {
+    super({
+      async transform(raw, controller) {
+        const data = new Uint8Array(await raw.arrayBuffer());
+        controller.enqueue([data[0], data.slice(1)]);
+      },
+    }, config);
+  }
+}

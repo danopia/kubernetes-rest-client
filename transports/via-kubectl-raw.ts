@@ -96,6 +96,8 @@ export class KubectlRawRestClient implements RestClient {
     }[opts.method];
     if (!command) throw new Error(`KubectlRawRestClient cannot perform HTTP ${opts.method}`);
 
+    if (opts.expectChannel) throw new Error(`TODO: KubectlRawRestClient cannot pretend to open Channels yet`);
+
     if (opts.abortSignal?.aborted) throw new Error(`Given AbortSignal is already aborted`);
 
     let path = opts.path || '/';
